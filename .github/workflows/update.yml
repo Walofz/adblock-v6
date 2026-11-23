@@ -1,0 +1,53 @@
+name: Update blocklists
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # ทุก 6 ชั่วโมง (UTC)
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [sources.txt, whitelist.txt, custom.txt, scripts/build.py]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build blocklists
+        run: python3 scripts/build.py
+
+      - name: Publish to release branch (only if changed)
+        shell: bash
+        run: |
+          set -e
+          AUTH_URL="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          CHANGED=1
+
+          if git ls-remote --exit-code "$AUTH_URL" release >/dev/null 2>&1; then
+            git fetch "$AUTH_URL" release:refs/remotes/origin/release
+            CHANGED=0
+            # เทียบเฉพาะรายการโดเมน ข้ามบรรทัด # (เวลา/จำนวนในหัวไฟล์)
+            for f in blocklist-*.txt; do
+              diff -q <(git show "origin/release:$f" 2>/dev/null | grep -v '^#') \
+                      <(grep -v '^#' "$f") >/dev/null || CHANGED=1
+            done
+          fi
+
+          if [ "$CHANGED" = "0" ]; then
+            echo "No changes"
+            exit 0
+          fi
+
+          rm -rf /tmp/out && mkdir /tmp/out
+          cp blocklist-*.txt /tmp/out/
+          cd /tmp/out
+          git init -b release
+          git config user.name  "filter-bot"
+          git config user.email "filter-bot@users.noreply.github.com"
+          git add .
+          git commit -m "Update blocklists $(date -u +%F\ %H:%M)"
+          git push -f "$AUTH_URL" release
